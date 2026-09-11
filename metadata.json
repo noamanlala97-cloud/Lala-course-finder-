@@ -1,0 +1,6 @@
+{
+  "name": "LALA COURSE FINDER",
+  "description": "Find the right course. Match your profile. Study in Germany. Upload your transcript and discover German university programs matching your academic background.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
