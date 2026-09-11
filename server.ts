@@ -15,6 +15,19 @@ import {
   StudentReview,
   UserNotification
 } from "./src/types";
+import { requireAuth, optionalAuth, AuthRequest } from "./src/middleware/auth.ts";
+import {
+  getOrCreateUser,
+  getUserProfile,
+  upsertUserProfile,
+  getSavedCourses as getDbSavedCourses,
+  addSavedCourse as addDbSavedCourse,
+  removeSavedCourse as removeDbSavedCourse,
+  addTranscriptRecord,
+  getTranscripts
+} from "./src/db/users.ts";
+import { db } from "./src/db/index.ts";
+import { sql } from "drizzle-orm";
 
 dotenv.config();
 
@@ -1151,6 +1164,168 @@ app.post("/api/admin/courses", (req: Request, res: Response) => {
   };
   coursesDb.unshift(newCourse);
   res.status(201).json(newCourse);
+});
+
+// -------------------------------------------------------------
+// Cloud SQL PostgreSQL Database & User Sync Routes
+// -------------------------------------------------------------
+
+// Database health check
+app.get("/api/db/health", async (_req: Request, res: Response) => {
+  try {
+    const result = await db.execute(
+      sql`SELECT current_database() as database, current_user as user, version() as version`
+    );
+    res.json({
+      status: "connected",
+      engine: "PostgreSQL (Cloud SQL)",
+      region: "asia-southeast1",
+      details: result.rows[0]
+    });
+  } catch (error: any) {
+    console.error("Database health check failed:", error);
+    res.status(503).json({
+      status: "disconnected",
+      error: error.message
+    });
+  }
+});
+
+// Sync user on login
+app.post("/api/auth/sync", requireAuth, async (req: AuthRequest, res: Response) => {
+  try {
+    const uid = req.user!.uid;
+    const email = req.user!.email || `${uid}@user.local`;
+    const displayName = req.body.displayName || req.user!.name || null;
+
+    const user = await getOrCreateUser(uid, email, displayName);
+    res.json({ success: true, user });
+  } catch (error: any) {
+    console.error("User sync error:", error);
+    res.status(500).json({ error: "Failed to sync user with database." });
+  }
+});
+
+// User academic profile
+app.get("/api/user/profile", optionalAuth, async (req: AuthRequest, res: Response) => {
+  try {
+    if (!req.user) {
+      return res.json({ profile: currentStudentProfile, isDemo: true });
+    }
+    const profile = await getUserProfile(req.user.uid);
+    if (!profile) {
+      return res.json({ profile: currentStudentProfile, isDemo: true });
+    }
+    res.json({ profile, isDemo: false });
+  } catch (error: any) {
+    console.error("Fetch profile error:", error);
+    res.status(500).json({ error: "Failed to fetch user profile." });
+  }
+});
+
+app.post("/api/user/profile", requireAuth, async (req: AuthRequest, res: Response) => {
+  try {
+    const uid = req.user!.uid;
+    const { degree, cgpa, maxGrade, minPassGrade, ielts, germanLevel, bavarianGrade } = req.body;
+
+    const updated = await upsertUserProfile(uid, {
+      degree,
+      cgpa: Number(cgpa),
+      maxGrade: Number(maxGrade),
+      minPassGrade: Number(minPassGrade),
+      ielts: Number(ielts),
+      germanLevel,
+      bavarianGrade: Number(bavarianGrade)
+    });
+
+    res.json({ success: true, profile: updated });
+  } catch (error: any) {
+    console.error("Update profile error:", error);
+    res.status(500).json({ error: "Failed to save profile." });
+  }
+});
+
+// User saved courses (Study Plan)
+app.get("/api/user/saved-courses", optionalAuth, async (req: AuthRequest, res: Response) => {
+  try {
+    if (!req.user) {
+      return res.json({ savedCourses: savedCoursesDb, isDemo: true });
+    }
+    const list = await getDbSavedCourses(req.user.uid);
+    res.json({ savedCourses: list, isDemo: false });
+  } catch (error: any) {
+    console.error("Fetch saved courses error:", error);
+    res.status(500).json({ error: "Failed to fetch saved courses." });
+  }
+});
+
+app.post("/api/user/saved-courses", requireAuth, async (req: AuthRequest, res: Response) => {
+  try {
+    const uid = req.user!.uid;
+    const { courseId, courseName, universityName, degree, language, deadline, matchScore } = req.body;
+
+    const saved = await addDbSavedCourse(uid, {
+      courseId,
+      courseName,
+      universityName,
+      degree,
+      language,
+      deadline,
+      matchScore: Number(matchScore) || undefined
+    });
+
+    res.json({ success: true, savedCourse: saved });
+  } catch (error: any) {
+    console.error("Save course error:", error);
+    res.status(500).json({ error: "Failed to save course." });
+  }
+});
+
+app.delete("/api/user/saved-courses/:courseId", requireAuth, async (req: AuthRequest, res: Response) => {
+  try {
+    const uid = req.user!.uid;
+    const { courseId } = req.params;
+
+    await removeDbSavedCourse(uid, courseId);
+    res.json({ success: true });
+  } catch (error: any) {
+    console.error("Delete saved course error:", error);
+    res.status(500).json({ error: "Failed to remove course." });
+  }
+});
+
+// User transcripts
+app.get("/api/user/transcripts", optionalAuth, async (req: AuthRequest, res: Response) => {
+  try {
+    if (!req.user) {
+      return res.json({ transcripts: [], isDemo: true });
+    }
+    const list = await getTranscripts(req.user.uid);
+    res.json({ transcripts: list, isDemo: false });
+  } catch (error: any) {
+    console.error("Fetch transcripts error:", error);
+    res.status(500).json({ error: "Failed to fetch transcripts." });
+  }
+});
+
+app.post("/api/user/transcripts", requireAuth, async (req: AuthRequest, res: Response) => {
+  try {
+    const uid = req.user!.uid;
+    const { fileName, fileSize, extractedEcts, calculatedGrade, parsedConfidence } = req.body;
+
+    const record = await addTranscriptRecord(uid, {
+      fileName,
+      fileSize,
+      extractedEcts: Number(extractedEcts) || 216,
+      calculatedGrade: Number(calculatedGrade) || null,
+      parsedConfidence
+    });
+
+    res.json({ success: true, transcript: record });
+  } catch (error: any) {
+    console.error("Save transcript error:", error);
+    res.status(500).json({ error: "Failed to record transcript." });
+  }
 });
 
 // -------------------------------------------------------------

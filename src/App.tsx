@@ -31,8 +31,11 @@ import { COURSES_DATA } from "./data/coursesData";
 import { UNIVERSITIES_DATA } from "./data/universitiesData";
 import { DEFAULT_DEMO_STUDENT, calculateCourseMatch } from "./utils/matchingEngine";
 import { Sparkles, MessageSquare } from "lucide-react";
+import { useAuth } from "./context/AuthContext";
 
 export default function App() {
+  const { user, getIdToken } = useAuth();
+
   // Navigation State
   const [currentView, setCurrentView] = useState<string>("home");
 
@@ -175,24 +178,58 @@ export default function App() {
   const [isCompareModalOpen, setIsCompareModalOpen] = useState(false);
   const [sopModalCourse, setSopModalCourse] = useState<Course | null>(null);
 
-  // Sync with backend API on mount
+  // Sync with backend API on mount & on user authentication change
   useEffect(() => {
     async function loadBackendData() {
       try {
-        const [cRes, uRes, pRes] = await Promise.all([
+        const [cRes, uRes] = await Promise.all([
           fetch("/api/courses").then((r) => (r.ok ? r.json() : null)),
-          fetch("/api/universities").then((r) => (r.ok ? r.json() : null)),
-          fetch("/api/profile").then((r) => (r.ok ? r.json() : null))
+          fetch("/api/universities").then((r) => (r.ok ? r.json() : null))
         ]);
         if (cRes && cRes.courses) setCourses(cRes.courses);
         if (uRes && uRes.universities) setUniversities(uRes.universities);
-        if (pRes && pRes.profile) setStudentProfile(pRes.profile);
+
+        if (user) {
+          const token = await getIdToken();
+          if (token) {
+            // Load user profile & saved courses from PostgreSQL
+            const [pRes, sRes] = await Promise.all([
+              fetch("/api/user/profile", {
+                headers: { Authorization: `Bearer ${token}` }
+              }).then((r) => (r.ok ? r.json() : null)),
+              fetch("/api/user/saved-courses", {
+                headers: { Authorization: `Bearer ${token}` }
+              }).then((r) => (r.ok ? r.json() : null))
+            ]);
+
+            if (pRes?.profile) {
+              setStudentProfile((prev) => ({
+                ...prev,
+                degree: pRes.profile.degree || prev.degree,
+                cgpa: pRes.profile.cgpa ?? prev.cgpa,
+                ielts: pRes.profile.ielts ?? prev.ielts,
+                germanLevel: pRes.profile.germanLevel || prev.germanLevel
+              }));
+            }
+
+            if (sRes?.savedCourses && Array.isArray(sRes.savedCourses)) {
+              setSavedCourses(
+                sRes.savedCourses.map((item: any) => ({
+                  id: String(item.id),
+                  courseId: item.courseId,
+                  category: "Strong Match",
+                  savedAt: item.createdAt ? new Date(item.createdAt).toISOString().split("T")[0] : "2026-03-10"
+                }))
+              );
+            }
+          }
+        }
       } catch (e) {
-        console.warn("Backend API sync fallback to bundled data:", e);
+        console.warn("Backend API sync fallback:", e);
       }
     }
     loadBackendData();
-  }, []);
+  }, [user]);
 
   // Matching Action
   const handleRunMatch = async (profile: StudentProfile): Promise<CourseMatchResult[]> => {
@@ -213,15 +250,16 @@ export default function App() {
     return courses.map((course) => calculateCourseMatch(studentProfile, course));
   };
 
-  // Toggle Save Course
-  const handleToggleSaveCourse = (courseOrId: Course | string) => {
+  // Toggle Save Course (with Cloud SQL PostgreSQL persistence)
+  const handleToggleSaveCourse = async (courseOrId: Course | string) => {
     const courseId = typeof courseOrId === "string" ? courseOrId : courseOrId.id;
+    const foundCourse = typeof courseOrId !== "string" ? courseOrId : courses.find((c) => c.id === courseId);
+    const existing = savedCourses.find((s) => s.courseId === courseId);
+
     setSavedCourses((prev) => {
-      const existing = prev.find((s) => s.courseId === courseId);
       if (existing) {
         return prev.filter((s) => s.courseId !== courseId);
       } else {
-        const foundCourse = typeof courseOrId !== "string" ? courseOrId : courses.find((c) => c.id === courseId);
         return [
           ...prev,
           {
@@ -234,6 +272,39 @@ export default function App() {
         ];
       }
     });
+
+    if (user) {
+      try {
+        const token = await getIdToken();
+        if (token) {
+          if (existing) {
+            await fetch(`/api/user/saved-courses/${courseId}`, {
+              method: "DELETE",
+              headers: { Authorization: `Bearer ${token}` }
+            });
+          } else if (foundCourse) {
+            await fetch("/api/user/saved-courses", {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+                Authorization: `Bearer ${token}`
+              },
+              body: JSON.stringify({
+                courseId: foundCourse.id,
+                courseName: foundCourse.name,
+                universityName: foundCourse.universityName,
+                degree: foundCourse.degree,
+                language: foundCourse.language,
+                deadline: foundCourse.deadline.winterDeadline,
+                matchScore: foundCourse.matchScore
+              })
+            });
+          }
+        }
+      } catch (err) {
+        console.error("Failed to sync saved course with PostgreSQL:", err);
+      }
+    }
   };
 
   // Toggle Compare Course
@@ -251,7 +322,7 @@ export default function App() {
     });
   };
 
-  // Update Profile
+  // Update Profile (with Cloud SQL PostgreSQL persistence)
   const handleUpdateProfile = async (updated: StudentProfile) => {
     setStudentProfile(updated);
     try {
@@ -260,6 +331,28 @@ export default function App() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(updated)
       });
+
+      if (user) {
+        const token = await getIdToken();
+        if (token) {
+          await fetch("/api/user/profile", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              Authorization: `Bearer ${token}`
+            },
+            body: JSON.stringify({
+              degree: updated.degree,
+              cgpa: updated.cgpa,
+              maxGrade: 10.0,
+              minPassGrade: 4.0,
+              ielts: updated.ielts,
+              germanLevel: updated.germanLevel,
+              bavarianGrade: updated.cgpa ? Number((1 + 3 * Math.max(0, Math.min(6, (10 - updated.cgpa) / (10 - 4)))).toFixed(2)) : null
+            })
+          });
+        }
+      }
     } catch (err) {
       console.error("Failed to persist profile to server:", err);
     }

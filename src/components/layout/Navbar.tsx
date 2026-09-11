@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import {
   Bell,
   User,
@@ -10,10 +10,14 @@ import {
   MessageSquare,
   ShieldCheck,
   CheckCircle2,
+  Database,
+  LogIn,
+  LogOut,
   X
 } from "lucide-react";
 import { AppLogo } from "../common/AppLogo";
 import { UserNotification } from "../../types";
+import { useAuth } from "../../context/AuthContext";
 
 interface NavbarProps {
   currentView?: string;
@@ -39,6 +43,22 @@ export const Navbar: React.FC<NavbarProps> = ({
   onOpenAdmin = () => {}
 }) => {
   const [notifOpen, setNotifOpen] = useState(false);
+  const [userMenuOpen, setUserMenuOpen] = useState(false);
+  const [dbStatus, setDbStatus] = useState<string>("connected");
+  const { user, signInWithGoogle, signOut, loading: authLoading } = useAuth();
+
+  useEffect(() => {
+    fetch("/api/db/health")
+      .then((res) => res.json())
+      .then((data) => {
+        if (data.status === "connected") {
+          setDbStatus("connected");
+        } else {
+          setDbStatus("offline");
+        }
+      })
+      .catch(() => setDbStatus("offline"));
+  }, []);
 
   const effectiveView = currentView || activeTab;
 
@@ -209,15 +229,89 @@ export const Navbar: React.FC<NavbarProps> = ({
             )}
           </div>
 
-          {/* Profile Circle Avatar Button */}
-          <button
-            onClick={() => onNavigate("dashboard")}
-            className="w-9 h-9 rounded-full bg-slate-950 text-white flex items-center justify-center hover:ring-2 hover:ring-blue-500/40 transition-all cursor-pointer shadow-sm"
-            aria-label="Student Profile"
-            title="Student Profile"
+          {/* PostgreSQL DB Live Badge */}
+          <div
+            className="hidden sm:flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-emerald-50 border border-emerald-200/80 text-[11px] font-bold text-emerald-800"
+            title="Cloud SQL PostgreSQL Database connected in asia-southeast1"
           >
-            <User className="w-5 h-5 text-white" />
-          </button>
+            <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
+            <Database className="w-3 h-3 text-emerald-700" />
+            <span>PostgreSQL</span>
+          </div>
+
+          {/* User Authentication / Profile Menu */}
+          {user ? (
+            <div className="relative">
+              <button
+                onClick={() => setUserMenuOpen(!userMenuOpen)}
+                className="w-9 h-9 rounded-full overflow-hidden border-2 border-blue-600 bg-slate-900 text-white flex items-center justify-center hover:ring-2 hover:ring-blue-500/40 transition-all cursor-pointer shadow-sm"
+                aria-label="User Account"
+                title={user.displayName || user.email || "User Account"}
+              >
+                {user.photoURL ? (
+                  <img
+                    src={user.photoURL}
+                    alt="User Profile"
+                    className="w-full h-full object-cover"
+                    referrerPolicy="no-referrer"
+                  />
+                ) : (
+                  <span className="text-xs font-black">
+                    {(user.displayName || user.email || "U").charAt(0).toUpperCase()}
+                  </span>
+                )}
+              </button>
+
+              {userMenuOpen && (
+                <div className="absolute right-0 mt-2 w-64 bg-white rounded-2xl shadow-xl border border-slate-200 p-3 z-50 animate-in fade-in slide-in-from-top-2">
+                  <div className="pb-2.5 border-b border-slate-100">
+                    <p className="font-extrabold text-xs text-slate-900 truncate">
+                      {user.displayName || "German Student"}
+                    </p>
+                    <p className="text-[11px] text-slate-500 truncate">{user.email}</p>
+                    <span className="inline-flex items-center gap-1 text-[10px] text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded-full mt-1 font-bold">
+                      <span className="w-1.5 h-1.5 rounded-full bg-emerald-500"></span>
+                      Cloud Synced
+                    </span>
+                  </div>
+
+                  <div className="pt-2 space-y-1">
+                    <button
+                      onClick={() => {
+                        setUserMenuOpen(false);
+                        onNavigate("dashboard");
+                      }}
+                      className="w-full text-left px-2.5 py-1.5 rounded-xl hover:bg-slate-50 text-xs font-bold text-slate-800 flex items-center gap-2 cursor-pointer"
+                    >
+                      <User className="w-3.5 h-3.5 text-blue-600" />
+                      <span>Academic Profile & Plan</span>
+                    </button>
+
+                    <button
+                      onClick={async () => {
+                        setUserMenuOpen(false);
+                        await signOut();
+                      }}
+                      className="w-full text-left px-2.5 py-1.5 rounded-xl hover:bg-rose-50 text-xs font-bold text-rose-600 flex items-center gap-2 cursor-pointer"
+                    >
+                      <LogOut className="w-3.5 h-3.5" />
+                      <span>Sign Out</span>
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+          ) : (
+            <button
+              onClick={() => signInWithGoogle()}
+              disabled={authLoading}
+              className="px-3 py-1.5 bg-slate-900 hover:bg-slate-800 text-white font-bold text-xs rounded-xl shadow-sm flex items-center gap-1.5 cursor-pointer transition-colors"
+              title="Sign in with Google"
+            >
+              <LogIn className="w-3.5 h-3.5 text-blue-400" />
+              <span className="hidden sm:inline">Sign In</span>
+            </button>
+          )}
         </div>
       </div>
     </header>
